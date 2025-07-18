@@ -4,7 +4,7 @@ from config import Config
 
 def fetch_table(table_name: str) -> pd.DataFrame:
     """
-    cPanel’dagi PHP‑API orqali berilgan jadvalni oladi
+    cPanel’dagi PHP-API orqali berilgan jadvalni oladi
     va pandas DataFrame ga aylantirib qaytaradi.
     """
     url     = Config.CPANEL_API_URL
@@ -26,13 +26,15 @@ def fetch_table(table_name: str) -> pd.DataFrame:
     if isinstance(data, dict):
         data = [data]
 
-    # Oxirgi qadam: list-of-dicts → DataFrame
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    # DIAGNOSTIKA: kelgan ustunlar
+    print(f"[DEBUG] {table_name}.columns =", df.columns.tolist())
 
+    return df
 
 def fetch_user(user_id: int) -> dict:
     """
-    cPanel’dagi PHP‑API orqali bitta user oladi.
+    cPanel’dagi PHP-API orqali bitta user oladi.
     Agar topilmasa ValueError, API xatosi bo‘lsa RuntimeError.
     """
     url     = Config.CPANEL_API_URL
@@ -46,13 +48,10 @@ def fetch_user(user_id: int) -> dict:
     resp.raise_for_status()
 
     data = resp.json()
-    # API xatosi?
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(f"API xatosi (id={user_id}): {data['error']}")
 
-    # List bo‘lsa, birinchi element
     if isinstance(data, list) and data:
         return data[0]
 
-    # Hech nima bo‘lmasa
     raise ValueError(f"User topilmadi (id={user_id})")
