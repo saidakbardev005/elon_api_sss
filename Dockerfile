@@ -21,4 +21,4 @@ COPY . .
 EXPOSE 5000
 
 # Default CMD — gunicorn bilan run
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--timeout", "120"]
+CMD ["python", "app.py"]
