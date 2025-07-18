@@ -6,34 +6,39 @@ from config import Config
 
 def fetch_table(table_name: str) -> pd.DataFrame:
     """
-    cPanel’dagi PHP‐API orqali berilgan jadvalni oladi
+    cPanel’dagi PHP‐API orqali berilgan jadvalni POST so‘rovi bilan oladi
     va pandas DataFrame ga aylantirib qaytaradi.
     """
+    url = Config.CPANEL_API_URL
+    payload = {"table": table_name}
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json"
+    }
+
     try:
-        resp = requests.get(
-            Config.CPANEL_API_URL,
-            params={"table": table_name},
-            timeout=10
-        )
+        resp = requests.post(url, data=payload, headers=headers, timeout=10)
         resp.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(f"Jadvalni olishda xato (table={table_name}): {e}")
 
     data = resp.json()
-    # Agar bo'sh ro'yxat qaytsa, bo'sh DataFrame qaytariladi
     return pd.DataFrame(data)
+
 
 def fetch_user(user_id: int) -> dict:
     """
     cPanel’dagi PHP‐API orqali `users` jadvalidan bitta foydalanuvchini oladi.
-    Agar topilmasa ValueError ko‘taradi.
     """
+    url = Config.CPANEL_API_URL
+    payload = {"id": user_id}
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json"
+    }
+
     try:
-        resp = requests.get(
-            Config.CPANEL_API_URL,
-            params={"id": user_id},
-            timeout=5
-        )
+        resp = requests.post(url, data=payload, headers=headers, timeout=5)
         resp.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(f"Userni olishda xato (id={user_id}): {e}")
