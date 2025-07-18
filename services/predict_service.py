@@ -1,3 +1,5 @@
+# services/predict_service.py
+
 import os
 import joblib
 import numpy as np
@@ -27,37 +29,37 @@ gmaps = googlemaps.Client(key=Config.GOOGLE_MAPS_API_KEY)
 
 def load_db_data():
     """
-    PHP-API orqali:
-      - announcements jadvalidan pick_up_address, shipping_address, price olib,
-        viloyatni ajratib, 'from_city' va 'to_city' ustunlarini yaratadi
-      - driver_locations, my_autos, users jadvallarini ham DataFrame ga yuklaydi
+    PHP‑API orqali:
+      1) announcements jadvalidan pick_up_address, shipping_address, price olib,
+         viloyatni ajratib, transliteratsiya + lowercase qilinadi
+      2) driver_locations, my_autos, users jadvallarini ham DataFrame ga yuklaydi
     """
-    # 1) Announcements → narx ma'lumotlari
+    # 1) Announcements jadvalidan kerakli ustunlarni o‘qiymiz
     ann = fetch_table("announcements")
     df_price = ann[["pick_up_address", "shipping_address", "price"]].copy()
 
-    # 2) Viloyatni ajratamiz
-    df_price["raw_from"] = (
+    # 2) Vergulgacha bo‘lgan qismini kesib olamiz (in‑place)
+    df_price["pick_up_address"] = (
         df_price["pick_up_address"]
         .astype(str)
         .map(lambda x: x.split(",")[0].strip())
     )
-    df_price["raw_to"] = (
+    df_price["shipping_address"] = (
         df_price["shipping_address"]
         .astype(str)
         .map(lambda x: x.split(",")[0].strip())
     )
 
-    # 3) Kirillizatsiya + normalize
-    df_price["from_city"] = df_price["raw_from"].map(
+    # 3) Kirillizatsiya va kichik harfga o‘tkazamiz (in‑place)
+    df_price["pick_up_address"] = df_price["pick_up_address"].map(
         lambda x: latin_to_cyrillic(x).strip().lower()
     )
-    df_price["to_city"] = df_price["raw_to"].map(
+    df_price["shipping_address"] = df_price["shipping_address"].map(
         lambda x: latin_to_cyrillic(x).strip().lower()
     )
 
-    # 4) Faqat kerakli ustunlar
-    df_price = df_price[["from_city", "to_city", "price"]]
+    # 4) Faqat kerakli ustunlarni qoldiramiz
+    df_price = df_price[["pick_up_address", "shipping_address", "price"]]
 
     # 5) Driver locations
     drivers_df = fetch_table("driver_locations")
@@ -89,12 +91,12 @@ def get_coordinates(location: str):
 def load_or_initialize_model():
     """KMeans + Scaler fayllari bor-yo'qligini tekshiradi, bo'lmasa yaratadi."""
     if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
-        model = joblib.load(MODEL_PATH)
+        model  = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
     else:
-        dummy = np.array([[1000, 10], [2000, 20]])
+        dummy  = np.array([[1000, 10], [2000, 20]])
         scaler = StandardScaler().fit(dummy)
-        model = MiniBatchKMeans(n_clusters=2, batch_size=2, random_state=42)
+        model  = MiniBatchKMeans(n_clusters=2, batch_size=2, random_state=42)
         model.partial_fit(scaler.transform(dummy))
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         joblib.dump(model, MODEL_PATH)
@@ -130,7 +132,7 @@ def online_fit_and_predict_price(f_enc: int, t_enc: int, actual_price: float = N
       - bashorat int qiymat qaytaradi
     """
     pm = load_or_initialize_price_model()
-    X = [[f_enc, t_enc]]
+    X  = [[f_enc, t_enc]]
     if actual_price is not None:
         pm.partial_fit(X, [actual_price])
         joblib.dump(pm, PRICE_MODEL_PATH)
@@ -139,21 +141,21 @@ def online_fit_and_predict_price(f_enc: int, t_enc: int, actual_price: float = N
 
 
 def train_price_model_from_db():
-    """Batch tarzda announcements jadvalidan narx modelini o‘rganadi."""
+    """Batch rejimida announcements jadvalidan narx modelini o‘rganadi."""
     try:
         df_price, _, _, _ = load_db_data()
     except Exception as e:
         print(f"❌ Train modeli yuklanmadi, DB xatosi: {e}")
         return
 
-    all_regions = df_price["from_city"].tolist() + df_price["to_city"].tolist()
+    all_regions = df_price["pick_up_address"].tolist() + df_price["shipping_address"].tolist()
     le = LabelEncoder().fit(all_regions)
 
     X, y = [], []
     for row in df_price.itertuples(index=False):
         try:
-            f_enc = int(le.transform([row.from_city])[0])
-            t_enc = int(le.transform([row.to_city])[0])
+            f_enc = int(le.transform([row.pick_up_address])[0])
+            t_enc = int(le.transform([row.shipping_address])[0])
             p     = float(row.price)
             if p > 0:
                 X.append([f_enc, t_enc])
@@ -172,17 +174,21 @@ def train_price_model_from_db():
 
 
 def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
-    """Transport klaster va masofaga qarab eng mos 5 haydovchini qaytaradi."""
+    """
+    Eng mos haydovchilar ro'yxatini tuzadi:
+      - klasterlash bo'yicha,
+      - sig'im va masofa bo'yicha saralash
+    """
     try:
         _, drivers_df, my_autos, users = load_db_data()
     except Exception as e:
         print(f"❌ Haydovchilarni yuklab bo'lmadi, DB xatosi: {e}")
         return []
 
-    drivers_df['latitude']       = pd.to_numeric(drivers_df['latitude'], errors='coerce')
-    drivers_df['longitude']      = pd.to_numeric(drivers_df['longitude'], errors='coerce')
-    my_autos['transport_weight'] = pd.to_numeric(my_autos['transport_weight'], errors='coerce')
-    my_autos['transport_volume'] = pd.to_numeric(my_autos['transport_volume'], errors='coerce')
+    drivers_df['latitude']          = pd.to_numeric(drivers_df['latitude'], errors='coerce')
+    drivers_df['longitude']         = pd.to_numeric(drivers_df['longitude'], errors='coerce')
+    my_autos['transport_weight']    = pd.to_numeric(my_autos['transport_weight'], errors='coerce')
+    my_autos['transport_volume']    = pd.to_numeric(my_autos['transport_volume'], errors='coerce')
 
     df = (
         drivers_df
@@ -197,8 +203,8 @@ def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
         return []
 
     scaler_loc = StandardScaler().fit(arr)
-    arr_s = scaler_loc.transform(arr)
-    km = MiniBatchKMeans(n_clusters=min(4, len(arr_s)), batch_size=6, random_state=42)
+    arr_s      = scaler_loc.transform(arr)
+    km         = MiniBatchKMeans(n_clusters=min(4, len(arr_s)), batch_size=6, random_state=42)
     km.partial_fit(arr_s)
 
     cid = int(km.predict(scaler_loc.transform([[weight, volume]]))[0])
