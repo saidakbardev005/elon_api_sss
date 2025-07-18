@@ -1,3 +1,5 @@
+# services/predict_service.py
+
 import os
 import joblib
 import numpy as np
@@ -14,73 +16,70 @@ from sklearn.linear_model import SGDRegressor
 
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
-# Model fayllari manzillari
-BASE_DIR         = os.path.abspath(os.path.dirname(__file__))
+# ─── Paths to model files ─────────────────────────────────────────────────────
+BASE_DIR         = os.path.dirname(__file__)
 PROJECT_ROOT     = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
 MODEL_PATH       = os.path.join(PROJECT_ROOT, "kmeans_model.pkl")
 SCALER_PATH      = os.path.join(PROJECT_ROOT, "scaler.pkl")
 PRICE_MODEL_PATH = os.path.join(PROJECT_ROOT, "price_predictor.pkl")
 
-# Google Maps client
+# ─── Google Maps client ────────────────────────────────────────────────────────
 gmaps = googlemaps.Client(key=Config.GOOGLE_MAPS_API_KEY)
-
 
 def load_db_data():
     """
-    fetch_table() orqali:
-      1) announcements jadvalidan pick_up_address, shipping_address, price olib,
-         vergulgacha bo‘lgan qismini ajratib, transliteratsiya + lowercase qilinadi
-      2) driver_locations, my_autos, users jadvallari DataFrame ga olinadi
+    1) fetch_table("announcements") → pick_up_address, shipping_address, price
+       * Vergulgacha bo‘lgan qismini ajratib,
+       * Kirillizatsiya + lowercase
+       * from_city/to_city nomli ustunlarga saqlaydi
+    2) fetch_table bakiya jadvallar → driver_locations, my_autos, users
+    Returns: df_price, drivers_df, my_autos, users
     """
-    # --- 1) Announcements → narx ma'lumotlari ---
+    # 1) Announcements
     ann = fetch_table("announcements")
-    # aynan JSON'dagi ustun nomlari bilan
-    df_price = ann[["pick_up_address", "shipping_address", "price"]].copy()
+    required = ["pick_up_address", "shipping_address", "price"]
+    if not all(col in ann.columns for col in required):
+        raise KeyError(f"Announcements table missing columns: {required}")
+    df_price = ann[required].copy()
 
-    # vergulgacha bo‘lgan qismni kesib olish
-    df_price["pick_up_address"] = (
-        df_price["pick_up_address"]
-        .astype(str)
-        .map(lambda x: x.split(",")[0].strip())
-    )
-    df_price["shipping_address"] = (
-        df_price["shipping_address"]
-        .astype(str)
-        .map(lambda x: x.split(",")[0].strip())
-    )
+    # 2) Vergulgacha bo‘lgan qism + transliteratsiya + lowercase (in-place)
+    for col in ["pick_up_address", "shipping_address"]:
+        df_price[col] = (
+            df_price[col]
+            .astype(str)
+            .str.split(",", n=1, expand=True)[0]
+            .str.strip()
+            .map(lambda x: latin_to_cyrillic(x).strip().lower())
+        )
 
-    # transliteratsiya + lowercase
-    df_price["pick_up_address"] = df_price["pick_up_address"].map(
-        lambda x: latin_to_cyrillic(x).strip().lower()
-    )
-    df_price["shipping_address"] = df_price["shipping_address"].map(
-        lambda x: latin_to_cyrillic(x).strip().lower()
-    )
+    # 3) Rename to from_city / to_city
+    df_price = df_price.rename(columns={
+        "pick_up_address": "from_city",
+        "shipping_address": "to_city"
+    })
 
-    # faqat kerakli ustunlar
-    df_price = df_price[["pick_up_address", "shipping_address", "price"]]
+    # 4) Keep only from_city, to_city, price
+    df_price = df_price[["from_city", "to_city", "price"]]
 
-    # --- 2) Driver locations ---
+    # 5) Other tables
     drivers_df = fetch_table("driver_locations")
+    my_autos   = fetch_table("my_autos")
 
-    # --- 3) My autos ---
-    my_autos = fetch_table("my_autos")
-
-    # --- 4) Users ---
     users = fetch_table("users")
     if "id" in users.columns:
         users = users.rename(columns={"id": "user_id"})
+    # ensure only needed columns
     users = users[["user_id", "fullname", "phone", "status"]]
 
     return df_price, drivers_df, my_autos, users
 
 
 def get_coordinates(location: str):
-    """Google Maps Geocoding yordamida (lat, lng) qaytaradi."""
+    """Geocode a location name into (lat, lng)."""
     try:
-        result = gmaps.geocode(location)
-        if result:
-            loc = result[0]["geometry"]["location"]
+        res = gmaps.geocode(location)
+        if res:
+            loc = res[0]["geometry"]["location"]
             return loc["lat"], loc["lng"]
     except Exception:
         pass
@@ -88,7 +87,7 @@ def get_coordinates(location: str):
 
 
 def load_or_initialize_model():
-    """KMeans + Scaler fayllari bor-yo'qligini tekshiradi, bo'lmasa yaratadi."""
+    """Load or create KMeans + StandardScaler for clustering."""
     if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
         model  = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
@@ -106,7 +105,7 @@ model, scaler = load_or_initialize_model()
 
 
 def online_fit_and_predict(weight: float, volume: float) -> int:
-    """Yangi yuk masshtabi uchun klaster bashorati + saqlash."""
+    """Incrementally fit KMeans to new data and predict its cluster."""
     global model, scaler
     Xs = scaler.transform([[weight, volume]])
     model.partial_fit(Xs)
@@ -115,7 +114,7 @@ def online_fit_and_predict(weight: float, volume: float) -> int:
 
 
 def load_or_initialize_price_model():
-    """SGDRegressor modelini yuklash yoki yaratish."""
+    """Load or create an SGDRegressor for price prediction."""
     if os.path.exists(PRICE_MODEL_PATH):
         return joblib.load(PRICE_MODEL_PATH)
     pm = SGDRegressor()
@@ -125,7 +124,9 @@ def load_or_initialize_price_model():
 
 
 def online_fit_and_predict_price(f_enc: int, t_enc: int, actual_price: float = None) -> int:
-    """Online narx bashorati (partial_fit agar actual_price berilsa)."""
+    """
+    Predict price by encoded regions, optionally update model if actual_price provided.
+    """
     pm = load_or_initialize_price_model()
     X  = [[f_enc, t_enc]]
     if actual_price is not None:
@@ -136,50 +137,48 @@ def online_fit_and_predict_price(f_enc: int, t_enc: int, actual_price: float = N
 
 
 def train_price_model_from_db():
-    """Batch rejimida announcements jadvalidan narx modelini o‘rganadi."""
+    """Batch-train the price model on the announcements data."""
     try:
         df_price, _, _, _ = load_db_data()
     except Exception as e:
-        print(f"❌ Train modeli yuklanmadi, DB xatosi: {e}")
+        print(f"❌ Could not load DB data for price model: {e}")
         return
 
-    regions = df_price["pick_up_address"].tolist() + df_price["shipping_address"].tolist()
+    regions = df_price["from_city"].tolist() + df_price["to_city"].tolist()
     le = LabelEncoder().fit(regions)
 
     X, y = [], []
     for row in df_price.itertuples(index=False):
-        try:
-            f_enc = int(le.transform([row.pick_up_address])[0])
-            t_enc = int(le.transform([row.shipping_address])[0])
-            p     = float(row.price)
-            if p > 0:
-                X.append([f_enc, t_enc])
-                y.append(p)
-        except:
-            continue
+        f_enc = le.transform([row.from_city])[0]
+        t_enc = le.transform([row.to_city])[0]
+        p     = float(row.price)
+        if p > 0:
+            X.append([f_enc, t_enc])
+            y.append(p)
 
     if not X:
-        print("❌ Narx modeli uchun ma'lumot topilmadi.")
+        print("❌ No valid price data found.")
         return
 
     pm = SGDRegressor()
     pm.partial_fit(X, y)
     joblib.dump(pm, PRICE_MODEL_PATH)
-    print(f"✅ Narx modeli {len(X)} namunada o‘qitildi.")
+    print(f"✅ Price model trained on {len(X)} samples.")
 
 
 def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
     """
-    Eng mos haydovchilarni qaytaradi:
-      - klasterlash bo'yicha
-      - sig'im & masofa bo'yicha saralash
+    Return up to 5 drivers closest in capacity and distance:
+      - cluster by (weight, volume)
+      - sort by capacity difference & geographic proximity
     """
     try:
         _, drivers_df, my_autos, users = load_db_data()
     except Exception as e:
-        print(f"❌ Haydovchilarni yuklab bo'lmadi, DB xatosi: {e}")
+        print(f"❌ Could not load DB data for drivers: {e}")
         return []
 
+    # Convert to numeric
     drivers_df['latitude']       = pd.to_numeric(drivers_df['latitude'], errors='coerce')
     drivers_df['longitude']      = pd.to_numeric(drivers_df['longitude'], errors='coerce')
     my_autos['transport_weight'] = pd.to_numeric(my_autos['transport_weight'], errors='coerce')
@@ -208,13 +207,16 @@ def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
     if same.empty:
         return []
 
-    same['capacity_distance'] = np.sqrt(
-        (same['transport_weight'] - weight)**2 +
-        (same['transport_volume'] - volume)**2
+    same['capacity_distance'] = np.hypot(
+        same['transport_weight'] - weight,
+        same['transport_volume'] - volume
     )
-    same['distance_km'] = np.sqrt(
-        (same['latitude'] - lat)**2 + (same['longitude'] - lon)**2
-    ) * 111
+    same['distance_km'] = (
+        np.hypot(
+            same['latitude'] - lat,
+            same['longitude'] - lon
+        ) * 111
+    )
 
     return (
         same
