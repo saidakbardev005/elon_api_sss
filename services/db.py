@@ -1,5 +1,3 @@
-# services/db.py
-
 import requests
 import pandas as pd
 from config import Config
@@ -8,16 +6,12 @@ def fetch_table(table_name: str) -> pd.DataFrame:
     """
     cPanel’dagi PHP‑API orqali berilgan jadvalni oladi
     va pandas DataFrame ga aylantirib qaytaradi.
-
-    - GET so‘rovi bilan ?table=… yuboradi
-    - Agar dict qaytsa, uni list ga o‘rash
-    - API error bo‘lsa exception ko‘tarish
     """
     url     = Config.CPANEL_API_URL
     params  = {"table": table_name}
     headers = {
-        "Accept":        "application/json",
-        "User-Agent":    "python-requests"
+        "Accept":     "application/json",
+        "User-Agent": "python-requests"
     }
 
     resp = requests.get(url, params=params, headers=headers, timeout=10)
