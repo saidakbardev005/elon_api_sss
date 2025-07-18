@@ -1,5 +1,3 @@
-# services/predict_service.py
-
 import os
 import joblib
 import numpy as np
@@ -16,7 +14,7 @@ from sklearn.linear_model import SGDRegressor
 
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
-# Loyihangiz papkasi va model fayllari manzillari
+# Loyihaning ildiz katalogi va model fayllari
 BASE_DIR         = os.path.abspath(os.path.dirname(__file__))
 PROJECT_ROOT     = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
 MODEL_PATH       = os.path.join(PROJECT_ROOT, "kmeans_model.pkl")
@@ -29,15 +27,16 @@ gmaps = googlemaps.Client(key=Config.GOOGLE_MAPS_API_KEY)
 
 def load_db_data():
     """
-    PHP-API orqali kerakli jadvallarni olib,
-    narx (announcements), haydovchilar, transport va foydalanuvchilar
-    ma'lumotlarini to'rt DataFrame ga qaytaradi.
+    PHP-API orqali:
+      - announcements jadvalidan pick_up_address, shipping_address, price olib,
+        viloyatni ajratib, 'from_city' va 'to_city' ustunlarini yaratadi
+      - driver_locations, my_autos, users jadvallarini ham DataFrame ga yuklaydi
     """
-    # 1) Announcements jadvalidan pick_up_address, shipping_address, price
+    # 1) Announcements → narx ma'lumotlari
     ann = fetch_table("announcements")
     df_price = ann[["pick_up_address", "shipping_address", "price"]].copy()
 
-    # 2) Viloyatlarni ajratamiz
+    # 2) Viloyatni ajratamiz
     df_price["raw_from"] = (
         df_price["pick_up_address"]
         .astype(str)
@@ -49,7 +48,7 @@ def load_db_data():
         .map(lambda x: x.split(",")[0].strip())
     )
 
-    # 3) Kirillizatsiya + normalizatsiya
+    # 3) Kirillizatsiya + normalize
     df_price["from_city"] = df_price["raw_from"].map(
         lambda x: latin_to_cyrillic(x).strip().lower()
     )
@@ -57,13 +56,13 @@ def load_db_data():
         lambda x: latin_to_cyrillic(x).strip().lower()
     )
 
-    # 4) Faqat kerakli ustunlarni qoldiramiz
+    # 4) Faqat kerakli ustunlar
     df_price = df_price[["from_city", "to_city", "price"]]
 
     # 5) Driver locations
     drivers_df = fetch_table("driver_locations")
 
-    # 6) My autos (transport)
+    # 6) My autos
     my_autos = fetch_table("my_autos")
 
     # 7) Users
@@ -76,9 +75,7 @@ def load_db_data():
 
 
 def get_coordinates(location: str):
-    """
-    Google Maps Geocoding API yordamida joylashuvni (lat, lng) qaytaradi.
-    """
+    """Google Maps Geocoding yordamida (lat, lng) qaytaradi."""
     try:
         result = gmaps.geocode(location)
         if result:
@@ -90,43 +87,34 @@ def get_coordinates(location: str):
 
 
 def load_or_initialize_model():
-    """
-    Klasterlash modeli va scaler fayllari bor-yo'qligini tekshiradi,
-    bo'lmasa dummy data bilan yaratadi.
-    """
+    """KMeans + Scaler fayllari bor-yo'qligini tekshiradi, bo'lmasa yaratadi."""
     if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
-        model  = joblib.load(MODEL_PATH)
+        model = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
     else:
-        dummy  = np.array([[1000, 10], [2000, 20]])
+        dummy = np.array([[1000, 10], [2000, 20]])
         scaler = StandardScaler().fit(dummy)
-        model  = MiniBatchKMeans(n_clusters=2, batch_size=2, random_state=42)
+        model = MiniBatchKMeans(n_clusters=2, batch_size=2, random_state=42)
         model.partial_fit(scaler.transform(dummy))
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         joblib.dump(model, MODEL_PATH)
         joblib.dump(scaler, SCALER_PATH)
     return model, scaler
 
-
 model, scaler = load_or_initialize_model()
 
 
 def online_fit_and_predict(weight: float, volume: float) -> int:
-    """
-    Yangi weight/volume kiritilganda online klasterlash va bashorat.
-    """
+    """Yangi yuk masshtabi uchun klaster bashorati + saqlash."""
     global model, scaler
-    X  = np.array([[weight, volume]])
-    Xs = scaler.transform(X)
+    Xs = scaler.transform([[weight, volume]])
     model.partial_fit(Xs)
     joblib.dump(model, MODEL_PATH)
     return int(model.predict(Xs)[0])
 
 
 def load_or_initialize_price_model():
-    """
-    SGDRegressor narx bashorat modeli.
-    """
+    """SGDRegressor modelini yuklash yoki yaratish."""
     if os.path.exists(PRICE_MODEL_PATH):
         return joblib.load(PRICE_MODEL_PATH)
     pm = SGDRegressor()
@@ -137,33 +125,29 @@ def load_or_initialize_price_model():
 
 def online_fit_and_predict_price(f_enc: int, t_enc: int, actual_price: float = None) -> int:
     """
-    Viloyat kodlari bo'yicha online narx bashorati:
-    - actual_price berilsa, modelga partial_fit qilinadi.
-    - Najotda 0 dan kichik chiqmasligi uchun max(0, ...) qaytaramiz.
+    Online narx bashorati:
+      - agar actual_price berilsa, partial_fit qilinadi
+      - bashorat int qiymat qaytaradi
     """
-    price_model = load_or_initialize_price_model()
-    X = np.array([[f_enc, t_enc]])
+    pm = load_or_initialize_price_model()
+    X = [[f_enc, t_enc]]
     if actual_price is not None:
-        price_model.partial_fit(X, [actual_price])
-        joblib.dump(price_model, PRICE_MODEL_PATH)
-    pred = price_model.predict(X)[0]
+        pm.partial_fit(X, [actual_price])
+        joblib.dump(pm, PRICE_MODEL_PATH)
+    pred = pm.predict(X)[0]
     return max(0, int(pred))
 
 
 def train_price_model_from_db():
-    """
-    Batch rejimida narx modelini announcements jadvalidan o'qitadi.
-    Agar ma'lumot bo'lmasa yoki xato yuz bersa, consolga yozadi.
-    """
+    """Batch tarzda announcements jadvalidan narx modelini o‘rganadi."""
     try:
         df_price, _, _, _ = load_db_data()
     except Exception as e:
         print(f"❌ Train modeli yuklanmadi, DB xatosi: {e}")
         return
 
-    le = LabelEncoder().fit(
-        df_price["from_city"].tolist() + df_price["to_city"].tolist()
-    )
+    all_regions = df_price["from_city"].tolist() + df_price["to_city"].tolist()
+    le = LabelEncoder().fit(all_regions)
 
     X, y = [], []
     for row in df_price.itertuples(index=False):
@@ -188,24 +172,18 @@ def train_price_model_from_db():
 
 
 def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
-    """
-    Eng mos haydovchilar ro'yxatini tuzadi:
-     - Klasterlash bo'yicha,
-     - Sig'imi va masofa bo'yicha saralash
-    """
+    """Transport klaster va masofaga qarab eng mos 5 haydovchini qaytaradi."""
     try:
         _, drivers_df, my_autos, users = load_db_data()
     except Exception as e:
         print(f"❌ Haydovchilarni yuklab bo'lmadi, DB xatosi: {e}")
         return []
 
-    # Ustunlarni raqamga aylantirish
-    drivers_df['latitude']          = pd.to_numeric(drivers_df['latitude'], errors='coerce')
-    drivers_df['longitude']         = pd.to_numeric(drivers_df['longitude'], errors='coerce')
-    my_autos['transport_weight']    = pd.to_numeric(my_autos['transport_weight'], errors='coerce')
-    my_autos['transport_volume']    = pd.to_numeric(my_autos['transport_volume'], errors='coerce')
+    drivers_df['latitude']       = pd.to_numeric(drivers_df['latitude'], errors='coerce')
+    drivers_df['longitude']      = pd.to_numeric(drivers_df['longitude'], errors='coerce')
+    my_autos['transport_weight'] = pd.to_numeric(my_autos['transport_weight'], errors='coerce')
+    my_autos['transport_volume'] = pd.to_numeric(my_autos['transport_volume'], errors='coerce')
 
-    # Jadval birlashtirish
     df = (
         drivers_df
         .merge(my_autos, on='user_id')
@@ -218,23 +196,14 @@ def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
     if arr.size == 0:
         return []
 
-    # Lokal scaler va klaster
     scaler_loc = StandardScaler().fit(arr)
-    arr_scaled = scaler_loc.transform(arr)
-    km = MiniBatchKMeans(
-        n_clusters=min(4, len(arr_scaled)),
-        batch_size=6,
-        random_state=42
-    )
-    km.partial_fit(arr_scaled)
+    arr_s = scaler_loc.transform(arr)
+    km = MiniBatchKMeans(n_clusters=min(4, len(arr_s)), batch_size=6, random_state=42)
+    km.partial_fit(arr_s)
 
-    # Sizning klasteringiz
-    inp_scaled = scaler_loc.transform([[weight, volume]])
-    cid = int(km.predict(inp_scaled)[0])
-
-    # Saralash: sig'imi va masofa bo'yicha
-    df['cluster_id'] = km.predict(arr_scaled)
-    same = df[df['cluster_id']==cid].copy()
+    cid = int(km.predict(scaler_loc.transform([[weight, volume]]))[0])
+    df['cluster_id'] = km.predict(arr_s)
+    same = df[df['cluster_id'] == cid].copy()
     if same.empty:
         return []
 
@@ -246,7 +215,6 @@ def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
         (same['latitude'] - lat)**2 + (same['longitude'] - lon)**2
     ) * 111
 
-    # Eng yaqin 5 ta haydovchi
     return (
         same
         .sort_values(by=['capacity_distance','distance_km'])
