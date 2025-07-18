@@ -17,8 +17,8 @@ from sklearn.linear_model import SGDRegressor
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 # Loyihangiz papkasi va model fayllari manzillari
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
+BASE_DIR         = os.path.abspath(os.path.dirname(__file__))
+PROJECT_ROOT     = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
 MODEL_PATH       = os.path.join(PROJECT_ROOT, "kmeans_model.pkl")
 SCALER_PATH      = os.path.join(PROJECT_ROOT, "scaler.pkl")
 PRICE_MODEL_PATH = os.path.join(PROJECT_ROOT, "price_predictor.pkl")
@@ -29,35 +29,45 @@ gmaps = googlemaps.Client(key=Config.GOOGLE_MAPS_API_KEY)
 
 def load_db_data():
     """
-    PHP‑API orqali kerakli jadvallarni olib,
+    PHP-API orqali kerakli jadvallarni olib,
     narx (announcements), haydovchilar, transport va foydalanuvchilar
     ma'lumotlarini to'rt DataFrame ga qaytaradi.
     """
-    # 1) Announcements jadvali → narx ma'lumotlari
+    # 1) Announcements jadvalidan pick_up_address, shipping_address, price
     ann = fetch_table("announcements")
-    df_price = ann[["raw_from", "raw_to", "price"]].copy()
-    # faqat birinchi qism (viloyat)ni ajratamiz
-    df_price["raw_from"] = df_price["pick_up_address"].astype(str).map(lambda x: x.split(",")[0])
-    df_price["raw_to"]   = df_price["shipping_address"].astype(str).map(lambda x: x.split(",")[0])
-    # kirillizatsiya + normalizatsiya
+    df_price = ann[["pick_up_address", "shipping_address", "price"]].copy()
+
+    # 2) Viloyatlarni ajratamiz
+    df_price["raw_from"] = (
+        df_price["pick_up_address"]
+        .astype(str)
+        .map(lambda x: x.split(",")[0].strip())
+    )
+    df_price["raw_to"] = (
+        df_price["shipping_address"]
+        .astype(str)
+        .map(lambda x: x.split(",")[0].strip())
+    )
+
+    # 3) Kirillizatsiya + normalizatsiya
     df_price["from_city"] = df_price["raw_from"].map(
         lambda x: latin_to_cyrillic(x).strip().lower()
     )
     df_price["to_city"] = df_price["raw_to"].map(
         lambda x: latin_to_cyrillic(x).strip().lower()
     )
-    # faqat kerakli ustunlarni qoldiramiz
+
+    # 4) Faqat kerakli ustunlarni qoldiramiz
     df_price = df_price[["from_city", "to_city", "price"]]
 
-    # 2) Haydovchilar koordinatalari
+    # 5) Driver locations
     drivers_df = fetch_table("driver_locations")
 
-    # 3) Avtomobillar (og'irlik/haqiqiy hajm)
+    # 6) My autos (transport)
     my_autos = fetch_table("my_autos")
 
-    # 4) Foydalanuvchilar
+    # 7) Users
     users = fetch_table("users")
-    # `id` ustunini `user_id` ga o'zgartirib, keragini ajratamiz
     if "id" in users.columns:
         users = users.rename(columns={"id": "user_id"})
     users = users[["user_id", "fullname", "phone", "status"]]
@@ -88,7 +98,7 @@ def load_or_initialize_model():
         model  = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
     else:
-        dummy = np.array([[1000, 10], [2000, 20]])
+        dummy  = np.array([[1000, 10], [2000, 20]])
         scaler = StandardScaler().fit(dummy)
         model  = MiniBatchKMeans(n_clusters=2, batch_size=2, random_state=42)
         model.partial_fit(scaler.transform(dummy))
@@ -96,6 +106,7 @@ def load_or_initialize_model():
         joblib.dump(model, MODEL_PATH)
         joblib.dump(scaler, SCALER_PATH)
     return model, scaler
+
 
 model, scaler = load_or_initialize_model()
 
@@ -105,7 +116,7 @@ def online_fit_and_predict(weight: float, volume: float) -> int:
     Yangi weight/volume kiritilganda online klasterlash va bashorat.
     """
     global model, scaler
-    X = np.array([[weight, volume]])
+    X  = np.array([[weight, volume]])
     Xs = scaler.transform(X)
     model.partial_fit(Xs)
     joblib.dump(model, MODEL_PATH)
@@ -150,20 +161,20 @@ def train_price_model_from_db():
         print(f"❌ Train modeli yuklanmadi, DB xatosi: {e}")
         return
 
-    from_list = df_price["from_city"].tolist()
-    to_list   = df_price["to_city"].tolist()
-    le = LabelEncoder().fit(from_list + to_list)
+    le = LabelEncoder().fit(
+        df_price["from_city"].tolist() + df_price["to_city"].tolist()
+    )
 
     X, y = [], []
     for row in df_price.itertuples(index=False):
         try:
             f_enc = int(le.transform([row.from_city])[0])
             t_enc = int(le.transform([row.to_city])[0])
-            p = float(row.price)
+            p     = float(row.price)
             if p > 0:
                 X.append([f_enc, t_enc])
                 y.append(p)
-        except Exception:
+        except:
             continue
 
     if not X:
@@ -188,26 +199,26 @@ def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
         print(f"❌ Haydovchilarni yuklab bo'lmadi, DB xatosi: {e}")
         return []
 
-    # Raqamlarga aylantirish
-    drivers_df["latitude"]  = pd.to_numeric(drivers_df["latitude"], errors="coerce")
-    drivers_df["longitude"] = pd.to_numeric(drivers_df["longitude"], errors="coerce")
-    my_autos["transport_weight"] = pd.to_numeric(my_autos["transport_weight"], errors="coerce")
-    my_autos["transport_volume"] = pd.to_numeric(my_autos["transport_volume"], errors="coerce")
+    # Ustunlarni raqamga aylantirish
+    drivers_df['latitude']          = pd.to_numeric(drivers_df['latitude'], errors='coerce')
+    drivers_df['longitude']         = pd.to_numeric(drivers_df['longitude'], errors='coerce')
+    my_autos['transport_weight']    = pd.to_numeric(my_autos['transport_weight'], errors='coerce')
+    my_autos['transport_volume']    = pd.to_numeric(my_autos['transport_volume'], errors='coerce')
 
-    # Jadval biriktirish
+    # Jadval birlashtirish
     df = (
         drivers_df
-        .merge(my_autos, on="user_id")
-        .merge(users, on="user_id")
-        .dropna(subset=["transport_weight", "transport_volume", "latitude", "longitude"])
+        .merge(my_autos, on='user_id')
+        .merge(users, on='user_id')
+        .dropna(subset=['transport_weight','transport_volume','latitude','longitude'])
         .copy()
     )
 
-    arr = df[["transport_weight", "transport_volume"]].values
+    arr = df[['transport_weight','transport_volume']].values
     if arr.size == 0:
         return []
 
-    # Lokal scaler + klaster
+    # Lokal scaler va klaster
     scaler_loc = StandardScaler().fit(arr)
     arr_scaled = scaler_loc.transform(arr)
     km = MiniBatchKMeans(
@@ -217,33 +228,31 @@ def find_best_drivers(lat: float, lon: float, weight: float, volume: float):
     )
     km.partial_fit(arr_scaled)
 
-    # O'z yukingiz klasteri
+    # Sizning klasteringiz
     inp_scaled = scaler_loc.transform([[weight, volume]])
     cid = int(km.predict(inp_scaled)[0])
 
-    # Saralash: sig'im va masofa bo‘yicha
-    df["cluster_id"] = km.predict(arr_scaled)
-    same = df[df["cluster_id"] == cid].copy()
+    # Saralash: sig'imi va masofa bo'yicha
+    df['cluster_id'] = km.predict(arr_scaled)
+    same = df[df['cluster_id']==cid].copy()
     if same.empty:
         return []
 
-    same["capacity_distance"] = np.sqrt(
-        (same["transport_weight"] - weight) ** 2 +
-        (same["transport_volume"] - volume) ** 2
+    same['capacity_distance'] = np.sqrt(
+        (same['transport_weight'] - weight)**2 +
+        (same['transport_volume'] - volume)**2
     )
-    same["distance_km"] = np.sqrt(
-        (same["latitude"] - lat) ** 2 + (same["longitude"] - lon) ** 2
+    same['distance_km'] = np.sqrt(
+        (same['latitude'] - lat)**2 + (same['longitude'] - lon)**2
     ) * 111
 
-    # Eng yaqin 5 ta haydovchini qaytaramiz
+    # Eng yaqin 5 ta haydovchi
     return (
         same
-        .sort_values(by=["capacity_distance", "distance_km"])
-        .head(5)[
-            [
-                "fullname", "phone", "transport_model",
-                "transport_weight", "transport_volume", "distance_km"
-            ]
-        ]
-        .to_dict(orient="records")
+        .sort_values(by=['capacity_distance','distance_km'])
+        .head(5)[[
+            'fullname','phone','transport_model',
+            'transport_weight','transport_volume','distance_km'
+        ]]
+        .to_dict(orient='records')
     )
