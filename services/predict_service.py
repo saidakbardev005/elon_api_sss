@@ -35,7 +35,7 @@ def load_db_data():
     """
     # 1) Announcements jadvali → narx ma'lumotlari
     ann = fetch_table("announcements")
-    df_price = ann[["pick_up_address", "shipping_address", "price"]].copy()
+    df_price = ann[["raw_from", "raw_to", "price"]].copy()
     # faqat birinchi qism (viloyat)ni ajratamiz
     df_price["raw_from"] = df_price["pick_up_address"].astype(str).map(lambda x: x.split(",")[0])
     df_price["raw_to"]   = df_price["shipping_address"].astype(str).map(lambda x: x.split(",")[0])
