@@ -4,12 +4,14 @@ from flask import Flask, request, jsonify, render_template
 from sklearn.preprocessing import LabelEncoder
 
 from config import Config
-from services.db import fetch_table
+from services.db import fetch_user
 from services.predict_service import (
     get_coordinates,
+    load_db_data,                  # qo‘shildi
     online_fit_and_predict,
     online_fit_and_predict_price,
     train_price_model_from_db,
+    find_best_drivers              # qo‘shildi
 )
 from transliteration.latin_to_cyrillic import latin_to_cyrillic
 
@@ -64,9 +66,8 @@ def api_predict():
     if lat is None or lon is None:
         return jsonify({"error": f"Could not geocode region: {frm_region}"}), 400
 
-    # 6) Bazadagi narx ma’lumotlarini olish
-    df_price, _, _, _ = fetch_table("announcements"), None, None, None
-    # if you use load_db_data(), ensure it uses fetch_table internally
+    # 6) Bazadagi narx ma’lumotlarini olish (from_city/to_city bilan)
+    df_price, _, _, _ = load_db_data()
 
     vil_from = df_price["from_city"].astype(str).tolist()
     vil_to   = df_price["to_city"].astype(str).tolist()
@@ -91,15 +92,13 @@ def api_predict():
     cluster_id = int(online_fit_and_predict(weight, volume))
 
     # 10) Eng mos haydovchilarni olish
-    drivers = fetch_table("driver_locations")  # or use a dedicated function
-    # you may want to call find_best_drivers() here if it's been updated to use fetch_table
-    best_drivers = drivers  # replace with find_best_drivers(lat, lon, weight, volume)
+    drivers = find_best_drivers(lat, lon, weight, volume)
 
     # 11) Javob
     return jsonify({
         "price": price,
         "cluster_id": cluster_id,
-        "drivers": best_drivers
+        "drivers": drivers
     }), 200
 
 
@@ -109,26 +108,16 @@ def api_get_user(user_id):
     cPanel’dagi PHP API orqali `users` jadvalidan bitta foydalanuvchini oladi.
     """
     try:
-        resp = requests.get(
-            Config.CPANEL_API_URL,
-            params={"id": user_id},
-            timeout=5
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        return jsonify({"error": f"PHP API so‘rovida xato: {e}"}), 502
+        user = fetch_user(user_id)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
 
-    data = resp.json()
-    if not data:
-        return jsonify({"error": "User topilmadi"}), 404
-
-    return jsonify({"user": data[0]}), 200
+    return jsonify({"user": user}), 200
 
 
 # —————— Main ——————
 
 if __name__ == "__main__":
-    # Deploy va gunicorn ishlatganingizda ham bu kod importda bajariladi:
     print("🚀 Server boshlanyapti...")
     try:
         train_price_model_from_db()
